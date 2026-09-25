@@ -23,3 +23,15 @@
    card is selected. Click a card once to interact with the embedded page. */
 .canvas-node:not(.is-focused) .html-embed-anywhere iframe { pointer-events: none; }
 .html-embed-anywhere.is-in-canvas .html-embed-anywhere-caption { cursor: default; }
+
+/* Drop dialog */
+.html-embed-anywhere-drop-name {
+  padding: 6px 10px;
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  word-break: break-all;
+}
+.html-embed-anywhere-url-input { width: 100%; }
+.html-embed-anywhere.is-web .html-embed-anywhere-caption { display: inline-block; }

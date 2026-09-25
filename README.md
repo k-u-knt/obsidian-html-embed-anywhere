@@ -1,6 +1,6 @@
 # HTML Embed Anywhere
 
-Embed **local HTML files from your vault** — interactive Plotly or D3 figures, HTML reports, small dashboards — directly inside Obsidian notes and canvas cards, with their JavaScript working. Runs on **desktop and on iOS/iPadOS**.
+Embed **local HTML files from your vault** — interactive Plotly or D3 figures, HTML reports, small dashboards — and **web pages** directly inside Obsidian notes and canvas cards, with their JavaScript working. Runs on **desktop and on iOS/iPadOS**.
 
 Obsidian does not load vault-local `.html` files in an `<iframe>` (a deliberate security restriction), and it cannot render `.html` files placed on a canvas. This plugin reads the file through the vault API and shows it in a sandboxed frame instead.
 
@@ -15,7 +15,7 @@ figures/umap_by_age.html
 ```
 ````
 
-- **Line 1**: the file — a vault path, a bare file name, or a `[[link]]`.
+- **Line 1**: the file — a vault path, a bare file name, or a `[[link]]` — or a web page URL (`https://…`).
 - **Line 2** (optional): height in pixels, or `auto` to fit the content. Defaults to the value in settings (600).
 
 You rarely need to type it:
@@ -23,11 +23,22 @@ You rarely need to type it:
 | How | Where | What it does |
 |---|---|---|
 | Command palette → **Embed HTML file…** (also the `</>` ribbon icon) | Desktop, mobile | Search the vault's `.html` files (newest first). In a note it inserts the block at the cursor; in a canvas it adds a card. |
-| **Drag an `.html` file from Finder / Explorer** into a note or canvas | Desktop | Copies it into your attachment folder (*Settings → Files and links*) and embeds it at the drop point. |
-| **Drag an `.html` file from Obsidian's file list** into a note or canvas | Desktop | Embeds it where you drop it. |
+| Command palette → **Embed web page…** | Desktop, mobile | Paste a URL to embed it. |
+| **Drag an `.html` file** from Finder / Explorer or from Obsidian's file list into a note or canvas | Desktop | Asks whether to **Embed** or **Insert link**. Files from Finder / Explorer are first copied into your attachment folder (*Settings → Files and links*). |
+| **Drag a web link** from a browser into a note or canvas | Desktop | Asks whether to **Embed** the page or **Insert link** (`[Page title](url)`). |
 | **Right-click / long-press** an `.html` file | Desktop, mobile | *Embed in current note / canvas* or *Copy HTML embed code*. |
 
-Click the file name under an embed to open the file in your default browser.
+### The drop dialog
+
+When you drop an HTML file or a web link, a dialog asks what to do:
+
+- **Embed** — note: an `html-embed` block at the drop point; canvas: a live card (web pages use Obsidian's own web card).
+- **Insert link** — note: a link in your usual link format (`[[file.html]]` or `[Title](https://…)`); canvas: a file card or a text card with the link.
+- **Cancel** — nothing is inserted.
+
+Tick **Remember my choice** to skip the dialog next time. Both behaviours (files and web links) can be set in *Settings → HTML Embed Anywhere → Drag and drop*: *Ask each time*, *Always embed*, *Always insert a link* — and for web links also *Don't handle*, which leaves drops to Obsidian. Dropping other kinds of files, or a mix, is left to Obsidian as usual.
+
+Click the caption under an embed to open the file or page in your default browser. Some websites forbid being shown inside other apps; those embeds stay blank — use the caption link or *Insert link* instead.
 
 ### Canvas
 
@@ -43,14 +54,18 @@ While a card is not selected, the embed ignores the mouse so the canvas can show
 
 - **Default height** — written into new embeds (pixels or `auto`).
 - **Canvas card width** — width of cards created on a canvas.
+- **When an HTML file is dropped** — ask / always embed / always insert a link.
+- **When a web link is dropped** — ask / always embed / always insert a link / don't handle.
 
 ## Security
 
-Only embed HTML you trust. Scripts inside the file **do run**, but the frame is sandboxed **without** `allow-same-origin`, so the embedded page gets an opaque origin and cannot access Obsidian, your vault, or other notes. Relative resources (images, local `.js`) are resolved next to the HTML file.
+Only embed HTML you trust. Scripts inside a local file **do run**, but the frame is sandboxed **without** `allow-same-origin`, so the embedded page gets an opaque origin and cannot access Obsidian, your vault, or other notes. Relative resources (images, local `.js`) are resolved next to the HTML file.
+
+Embedded web pages run under their own website's origin (as in a browser tab), which is separate from Obsidian's, so they cannot read your vault either.
 
 ## Limitations
 
-- Drag-and-drop from the file list and canvas card creation use undocumented Obsidian internals (`dragManager`, canvas API). They may need updating after Obsidian releases; the core `html-embed` rendering uses only the public API.
+- Drag-and-drop from the file list, the drop dialog's canvas actions and canvas card creation use undocumented Obsidian internals (`dragManager`, canvas API). They may need updating after Obsidian releases; the core `html-embed` rendering uses only the public API.
 - Very large files are read into memory each time the note renders.
 - `auto` height measures the page's content; pages that size themselves to the viewport (e.g. `height: 100vh`) should use a fixed height.
 
