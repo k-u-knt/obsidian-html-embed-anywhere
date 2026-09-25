@@ -1,0 +1,10 @@
+{
+  "id": "html-embed-anywhere",
+  "name": "HTML Embed Anywhere",
+  "version": "0.2.0",
+  "minAppVersion": "1.5.0",
+  "description": "Embed vault-local HTML files, such as Plotly or D3 figures, in notes and canvas cards. Insert them with a command, the file menu or drag and drop.",
+  "author": "Kenta Ninomiya",
+  "isDesktopOnly": false,
+  "authorUrl": "https://github.com/k-u-knt"
+}

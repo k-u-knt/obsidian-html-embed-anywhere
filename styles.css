@@ -1,0 +1,25 @@
+/* HTML Embed Anywhere */
+.html-embed-anywhere iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-s, 6px);
+  background: #fff;
+}
+.html-embed-anywhere-caption {
+  padding-top: 2px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.html-embed-anywhere-caption:hover { color: var(--text-muted); text-decoration: underline; }
+.html-embed-anywhere-error {
+  padding: 4px 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-error);
+}
+
+/* Canvas: let the canvas receive hover/drag (resize handles, connection points) unless the
+   card is selected. Click a card once to interact with the embedded page. */
+.canvas-node:not(.is-focused) .html-embed-anywhere iframe { pointer-events: none; }
+.html-embed-anywhere.is-in-canvas .html-embed-anywhere-caption { cursor: default; }
