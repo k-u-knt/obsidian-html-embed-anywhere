@@ -18,7 +18,7 @@
  */
 const {
   Plugin, Modal, MarkdownRenderChild, MarkdownView, TFile, normalizePath,
-  FuzzySuggestModal, Notice, PluginSettingTab, Setting,
+  FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder, setIcon,
 } = require("obsidian");
 
 const DEFAULTS = {
@@ -26,6 +26,7 @@ const DEFAULTS = {
   canvasWidth: 820,
   onDropFile: "ask", // ask | embed | link
   onDropUrl: "ask",  // ask | embed | link | obsidian (leave to Obsidian)
+  importFolder: "",  // "" = Obsidian's attachment setting; otherwise a vault folder
 };
 const isHtml = (f) => f instanceof TFile && /^html?$/i.test(f.extension);
 const isHtmlName = (n) => /\.html?$/i.test(n || "");
@@ -131,6 +132,11 @@ class HtmlEmbedSettings extends PluginSettingTab {
       .setDesc("Width in pixels of cards created on a canvas.")
       .addText((t) => t.setValue(String(s.canvasWidth)).onChange(async (v) => { s.canvasWidth = parseInt(v, 10) || 820; await save(); }));
     new Setting(containerEl).setName("Drag and drop").setHeading();
+    new Setting(containerEl)
+      .setName("Import folder")
+      .setDesc("Where HTML files dropped from outside the vault are copied, so the vault stays self-contained. Leave empty to use Obsidian's attachment setting (Files and links).")
+      .addText((t) => t.setPlaceholder("e.g. Assets/Import").setValue(s.importFolder || "")
+        .onChange(async (v) => { s.importFolder = v.trim().replace(/^\/+|\/+$/g, ""); await save(); }));
     new Setting(containerEl)
       .setName("When an HTML file is dropped")
       .setDesc("From Finder / Explorer or from Obsidian's file list, into a note or canvas.")
@@ -295,16 +301,55 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
   }
 
   async importExternal(files, sourcePath) {
+    // Copy dropped files into the vault. An identical file already in the import folder is reused
+    // instead of creating "name 1.html", "name 2.html", …
     const out = [];
     for (const f of files) {
       try {
         const buf = await f.arrayBuffer();
-        const path = await this.app.fileManager.getAvailablePathForAttachment(f.name, sourcePath);
+        const folder = await this.importFolderFor(f.name, sourcePath);
+        const existing = this.app.vault.getAbstractFileByPath(normalizePath((folder ? folder + "/" : "") + f.name));
+        if (existing instanceof TFile && existing.stat.size === buf.byteLength && (await this.sameContent(existing, buf))) {
+          out.push(existing);
+          continue;
+        }
+        let path;
+        if (this.settings.importFolder) {
+          path = this.availablePath(folder, f.name);
+        } else {
+          path = await this.app.fileManager.getAvailablePathForAttachment(f.name, sourcePath);
+        }
         out.push(await this.app.vault.createBinary(path, buf));
       } catch (e) { new Notice("Could not import " + f.name + ": " + e.message); }
     }
-    if (out.length) new Notice("Imported " + out.map((f) => f.path).join(", "));
+    if (out.length) new Notice("In vault: " + out.map((f) => f.path).join(", "));
     return out;
+  }
+
+  async importFolderFor(name, sourcePath) {
+    if (this.settings.importFolder) {
+      const folder = normalizePath(this.settings.importFolder);
+      if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) await this.app.vault.createFolder(folder);
+      return folder;
+    }
+    const p = await this.app.fileManager.getAvailablePathForAttachment(name, sourcePath);
+    return p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+  }
+
+  availablePath(folder, name) {
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
+    const pre = folder ? folder + "/" : "";
+    let p = normalizePath(pre + name), i = 1;
+    while (this.app.vault.getAbstractFileByPath(p)) p = normalizePath(`${pre}${stem} ${i++}${ext}`);
+    return p;
+  }
+
+  async sameContent(file, buf) {
+    const a = new Uint8Array(await this.app.vault.readBinary(file)), b = new Uint8Array(buf);
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
   }
 
   // ---------------------------------------------------------------- inserting
@@ -479,7 +524,9 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     this.fitToCanvasCard(wrap, iframe, cap, child);
   }
 
-  // In a canvas card the frame fills the card, so resizing the card resizes the embed.
+  // In a canvas card the frame fills the card (resizing the card resizes the embed) and stays inert,
+  // so the card handles, connection points and dragging work like any other card. Select the card
+  // and press "Interact" to use the embedded page; it switches off again when the card is deselected.
   fitToCanvasCard(wrap, iframe, cap, child, tries = 0) {
     const card = wrap.closest(".canvas-node-content");
     if (!card) {
@@ -488,12 +535,33 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     }
     wrap.addClass("is-in-canvas");
     this.frames.forEach((fr, t) => { if (fr === iframe) this.frames.delete(t); }); // card size wins over "auto"
+
+    // caption row + Interact toggle
+    const bar = createDiv({ cls: "html-embed-anywhere-bar" });
+    cap.replaceWith(bar);
+    bar.appendChild(cap);
+    const btn = bar.createEl("button", { cls: "html-embed-anywhere-interact clickable-icon", attr: { "aria-label": "Interact with the embedded page" } });
+    setIcon(btn, "mouse-pointer-click");
+    btn.createSpan({ text: "Interact" });
+    const setInteractive = (on) => {
+      wrap.toggleClass("is-interactive", on);
+      btn.toggleClass("is-active", on);
+      btn.lastChild.textContent = on ? "Done" : "Interact";
+    };
+    btn.addEventListener("click", (e) => { e.stopPropagation(); setInteractive(!wrap.hasClass("is-interactive")); });
+    const node = wrap.closest(".canvas-node");
+    if (node) {
+      const mo = new MutationObserver(() => { if (!node.hasClass("is-focused")) setInteractive(false); });
+      mo.observe(node, { attributes: true, attributeFilter: ["class"] });
+      child.register(() => mo.disconnect());
+    }
+
     const fit = () => {
       if (!card.clientHeight) return;
       const cr = card.getBoundingClientRect();
       const scale = cr.height / card.clientHeight || 1; // canvas zoom
       const top = (iframe.getBoundingClientRect().top - cr.top) / scale;
-      const h = Math.floor(card.clientHeight - top - cap.offsetHeight - 16);
+      const h = Math.floor(card.clientHeight - top - bar.offsetHeight - 16);
       if (h > 40) iframe.style.height = h + "px";
     };
     const ro = new ResizeObserver(() => fit());

@@ -19,10 +19,30 @@
   color: var(--text-error);
 }
 
-/* Canvas: let the canvas receive hover/drag (resize handles, connection points) unless the
-   card is selected. Click a card once to interact with the embedded page. */
-.canvas-node:not(.is-focused) .html-embed-anywhere iframe { pointer-events: none; }
-.html-embed-anywhere.is-in-canvas .html-embed-anywhere-caption { cursor: default; }
+/* Canvas: the embed is inert (so the card's resize handles, connection points and dragging work)
+   until you select the card and press "Interact". */
+.html-embed-anywhere.is-in-canvas:not(.is-interactive) iframe { pointer-events: none; }
+.html-embed-anywhere.is-in-canvas.is-interactive iframe { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.html-embed-anywhere-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2, 8px);
+  padding-top: 2px;
+}
+.html-embed-anywhere-bar .html-embed-anywhere-caption { padding-top: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.html-embed-anywhere-interact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: auto;
+  padding: 2px 6px;
+  font-size: var(--font-ui-smaller);
+}
+.html-embed-anywhere-interact svg { width: 14px; height: 14px; }
+.html-embed-anywhere-interact.is-active { color: var(--text-on-accent); background-color: var(--interactive-accent); }
+.canvas-node:not(.is-focused) .html-embed-anywhere-interact { visibility: hidden; }
 
 /* Drop dialog */
 .html-embed-anywhere-drop-name {
