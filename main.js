@@ -27,6 +27,7 @@ const DEFAULTS = {
   onDropFile: "ask", // ask | embed | link
   onDropUrl: "ask",  // ask | embed | link | obsidian (leave to Obsidian)
   importFolder: "",  // "" = Obsidian's attachment setting; otherwise a vault folder
+  reuseIdentical: true, // reuse a vault file with identical content instead of importing a copy
 };
 const isHtml = (f) => f instanceof TFile && /^html?$/i.test(f.extension);
 const isHtmlName = (n) => /\.html?$/i.test(n || "");
@@ -137,6 +138,10 @@ class HtmlEmbedSettings extends PluginSettingTab {
       .setDesc("Where HTML files dropped from outside the vault are copied, so the vault stays self-contained. Leave empty to use Obsidian's attachment setting (Files and links).")
       .addText((t) => t.setPlaceholder("e.g. Assets/Import").setValue(s.importFolder || "")
         .onChange(async (v) => { s.importFolder = v.trim().replace(/^\/+|\/+$/g, ""); await save(); }));
+    new Setting(containerEl)
+      .setName("Reuse identical files")
+      .setDesc("If a file with exactly the same content is already anywhere in the vault (whatever its name), link to it instead of importing another copy. Only files of the same size are read to check.")
+      .addToggle((t) => t.setValue(s.reuseIdentical !== false).onChange(async (v) => { s.reuseIdentical = v; await save(); }));
     new Setting(containerEl)
       .setName("When an HTML file is dropped")
       .setDesc("From Finder / Explorer or from Obsidian's file list, into a note or canvas.")
@@ -301,29 +306,61 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
   }
 
   async importExternal(files, sourcePath) {
-    // Copy dropped files into the vault. An identical file already in the import folder is reused
-    // instead of creating "name 1.html", "name 2.html", …
-    const out = [];
+    // Copy dropped files into the vault — unless a file with exactly the same content is already
+    // there (under any name, in any folder), in which case that file is reused.
+    const out = [], reused = [];
     for (const f of files) {
       try {
         const buf = await f.arrayBuffer();
         const folder = await this.importFolderFor(f.name, sourcePath);
-        const existing = this.app.vault.getAbstractFileByPath(normalizePath((folder ? folder + "/" : "") + f.name));
-        if (existing instanceof TFile && existing.stat.size === buf.byteLength && (await this.sameContent(existing, buf))) {
-          out.push(existing);
-          continue;
-        }
-        let path;
-        if (this.settings.importFolder) {
-          path = this.availablePath(folder, f.name);
-        } else {
-          path = await this.app.fileManager.getAvailablePathForAttachment(f.name, sourcePath);
-        }
+        const same = this.settings.reuseIdentical ? await this.findIdentical(buf, folder, f.name) : null;
+        if (same) { out.push(same); reused.push(same.path); continue; }
+        const path = this.settings.importFolder
+          ? this.availablePath(folder, f.name)
+          : await this.app.fileManager.getAvailablePathForAttachment(f.name, sourcePath);
         out.push(await this.app.vault.createBinary(path, buf));
       } catch (e) { new Notice("Could not import " + f.name + ": " + e.message); }
     }
-    if (out.length) new Notice("In vault: " + out.map((f) => f.path).join(", "));
+    const added = out.map((f) => f.path).filter((p) => !reused.includes(p));
+    if (added.length) new Notice("Imported: " + added.join(", "));
+    if (reused.length) new Notice("Identical file already in the vault, reused: " + reused.join(", "));
     return out;
+  }
+
+  // Content-based de-duplication. Only files with exactly the same byte size are candidates (a free
+  // check — sizes come from the vault index), so almost nothing is read. Candidates are compared by
+  // SHA-256; hashes are cached per path/size/mtime so repeated drops don't re-read files.
+  async findIdentical(buf, preferFolder, preferName) {
+    const size = buf.byteLength;
+    const cands = this.app.vault.getFiles().filter((f) => f.stat.size === size);
+    if (!cands.length) return null;
+    const rank = (f) => (f.parent && f.parent.path === (preferFolder || "/") ? 0 : 2) + (f.name === preferName ? 0 : 1);
+    cands.sort((a, b) => rank(a) - rank(b) || a.path.length - b.path.length || a.stat.ctime - b.stat.ctime); // prefer the "original"
+    const want = await this.digest(buf);
+    for (const f of cands) {
+      try { if ((await this.hashOf(f)) === want) return f; } catch (_) { /* unreadable: skip */ }
+    }
+    return null;
+  }
+
+  async hashOf(file) {
+    if (!this.hashCache) this.hashCache = new Map();
+    const key = file.path + "|" + file.stat.size + "|" + file.stat.mtime;
+    let h = this.hashCache.get(key);
+    if (!h) { h = await this.digest(await this.app.vault.readBinary(file)); this.hashCache.set(key, h); }
+    return h;
+  }
+
+  async digest(buf) {
+    if (window.crypto && window.crypto.subtle) {
+      const d = new Uint8Array(await window.crypto.subtle.digest("SHA-256", buf));
+      return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    // Fallback (no WebCrypto): 64-bit FNV-1a over the bytes, plus the length.
+    const a = new Uint8Array(buf);
+    let h1 = 0x811c9dc5, h2 = 0x01000193;
+    for (let i = 0; i < a.length; i++) { h1 = Math.imul(h1 ^ a[i], 16777619) >>> 0; h2 = Math.imul(h2 ^ a[i], 2246822519) >>> 0; }
+    return a.length + ":" + h1.toString(16) + h2.toString(16);
   }
 
   async importFolderFor(name, sourcePath) {
@@ -343,13 +380,6 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     let p = normalizePath(pre + name), i = 1;
     while (this.app.vault.getAbstractFileByPath(p)) p = normalizePath(`${pre}${stem} ${i++}${ext}`);
     return p;
-  }
-
-  async sameContent(file, buf) {
-    const a = new Uint8Array(await this.app.vault.readBinary(file)), b = new Uint8Array(buf);
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-    return true;
   }
 
   // ---------------------------------------------------------------- inserting

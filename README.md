@@ -54,7 +54,8 @@ The embed stays **inert** on the canvas, so the card behaves like any other card
 
 - **Default height** — written into new embeds (pixels or `auto`).
 - **Canvas card width** — width of cards created on a canvas.
-- **Import folder** — where HTML files dropped from outside the vault are copied. Empty = Obsidian's attachment setting (*Files and links → Default location for new attachments*). If an identical file is already there it is reused instead of making `name 1.html`, `name 2.html`, ….
+- **Import folder** — where HTML files dropped from outside the vault are copied. Empty = Obsidian's attachment setting (*Files and links → Default location for new attachments*).
+- **Reuse identical files** (on by default) — before importing, the plugin checks whether a file with **exactly the same content** already exists anywhere in the vault, whatever its name or folder; if so it links to that file instead of creating `name 1.html`, `name 2.html`, …. The check is cheap: only files with the identical byte size (known from the vault index, no disk reads) are candidates, and those are compared by SHA-256, with hashes cached.
 - **When an HTML file is dropped** — ask / always embed / always insert a link.
 - **When a web link is dropped** — ask / always embed / always insert a link / don't handle.
 
@@ -63,6 +64,8 @@ The embed stays **inert** on the canvas, so the card behaves like any other card
 Only embed HTML you trust. Scripts inside a local file **do run**, but the frame is sandboxed **without** `allow-same-origin`, so the embedded page gets an opaque origin and cannot access Obsidian, your vault, or other notes. Relative resources (images, local `.js`) are resolved next to the HTML file.
 
 Embedded web pages run under their own website's origin (as in a browser tab), which is separate from Obsidian's, so they cannot read your vault either.
+
+Tip: Obsidian hides file types it can't open (such as `.html`) in the file list unless *Settings → Files and links → Detect all file extensions* is on.
 
 ## Limitations
 
