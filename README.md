@@ -77,6 +77,12 @@ Embedded web pages run under their own website's origin (as in a browser tab), w
 
 The plugin registers `.html` / `.htm` as a file type, so HTML files are **always listed in the file explorer** (no need for *Detect all file extensions*) and **open rendered in their own Obsidian tab** when you click them or follow a link. Use the tab's *Open in default browser* button to open them outside Obsidian. (If another plugin already handles `.html`, that one keeps it.)
 
+### Web pages that need a sign-in
+
+On desktop, embedded web pages run as a **full Chromium browser tab** (Electron `<webview>`) in a **persistent session** of their own: cookies, logins, local storage/IndexedDB, service workers and the HTTP cache are kept across restarts. Services that need an account — Paperpile, Google apps, dashboards — work: sign in once inside the embed and stay signed in. A plain `<iframe>` can't do this, because browsers treat an embedded site's cookies and storage as third-party and block or partition them (typical symptoms: "problem syncing your data", endless sign-in loops).
+
+*Settings → Web pages*: choose **Browser tab** (default) or **Simple frame**, and **Clear saved logins and cache** for this device. On iPhone/iPad only simple frames exist, so sign-in-dependent sites may not work there.
+
 ### Protect vault settings (multi-device sync)
 
 Syncing a vault between devices (iCloud, Syncthing, …) can write an older copy of `.obsidian/app.json` back, silently resetting settings — e.g. the attachment folder or *Detect all file extensions*. Under *Settings → HTML Embed Anywhere → Protect vault settings* you can pin:

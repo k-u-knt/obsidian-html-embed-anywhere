@@ -18,7 +18,7 @@
  */
 const {
   Plugin, Modal, MarkdownRenderChild, MarkdownView, TFile, normalizePath,
-  FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder, setIcon, FileView,
+  FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder, setIcon, FileView, Platform,
 } = require("obsidian");
 
 const VIEW_TYPE_HTML = "html-embed-anywhere-file";
@@ -32,6 +32,8 @@ const DEFAULTS = {
   reuseIdentical: true, // reuse a vault file with identical content instead of importing a copy
   guardConfig: true,    // keep the pinned vault settings below, even if another device overwrites them
   pinnedConfig: null,   // e.g. { attachmentFolderPath: "Assets/Import", showUnsupportedFiles: true }
+  webEngine: "browser", // desktop: "browser" = Chromium tab with its own persistent session; "iframe"
+  webSession: "html-embed-anywhere", // name of the persistent browser session (cookies, logins, cache)
 };
 const GUARDED_KEYS = {
   attachmentFolderPath: "Default location for new attachments",
@@ -174,6 +176,17 @@ class HtmlEmbedSettings extends PluginSettingTab {
       .setName("Canvas card width")
       .setDesc("Width in pixels of cards created on a canvas.")
       .addText((t) => t.setValue(String(s.canvasWidth)).onChange(async (v) => { s.canvasWidth = parseInt(v, 10) || 820; await save(); }));
+    new Setting(containerEl).setName("Web pages").setHeading();
+    new Setting(containerEl)
+      .setName("Web page engine (desktop)")
+      .setDesc("Browser tab: embedded web pages run as a full Chromium browser tab with its own persistent session — logins, cookies, local storage and cache are kept, so services that need a sign-in (Paperpile, Google, dashboards …) work. Simple frame: a plain iframe (always used on iPhone/iPad, where logins inside embeds often fail).")
+      .addDropdown((d) => d.addOptions({ browser: "Browser tab (keeps logins)", iframe: "Simple frame" })
+        .setValue(s.webEngine || "browser").onChange(async (v) => { s.webEngine = v; await save(); }));
+    new Setting(containerEl)
+      .setName("Clear saved logins and cache")
+      .setDesc("Signs you out of every site used in web embeds on this device and empties their cache.")
+      .addButton((b) => b.setButtonText("Clear").setWarning().onClick(async () => { await this.plugin.clearWebSession(); }));
+
     new Setting(containerEl).setName("Protect vault settings").setHeading();
     const pinned = s.pinnedConfig || {};
     new Setting(containerEl)
@@ -804,9 +817,21 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
   renderUrl(url, hArg, el, ctx, opts) {
     const height = (opts && opts.fixed && opts.fixed.h) || parseInt(hArg, 10) || parseInt(this.settings.defaultHeight, 10) || 600;
     const wrap = el.createDiv({ cls: "html-embed-anywhere is-web" });
-    const iframe = wrap.createEl("iframe", {
-      attr: { src: url, sandbox: WEB_SANDBOX, allow: "fullscreen; clipboard-write; encrypted-media; picture-in-picture", title: url },
-    });
+    let iframe;
+    if (Platform.isDesktopApp && this.settings.webEngine !== "iframe") {
+      // Electron <webview>: a real Chromium tab in a persistent session, so sign-ins, cookies,
+      // IndexedDB, service workers and the HTTP cache survive restarts (unlike a third-party iframe).
+      iframe = wrap.createEl("webview");
+      iframe.setAttribute("partition", "persist:" + (this.settings.webSession || "html-embed-anywhere"));
+      iframe.setAttribute("allowpopups", "");
+      iframe.setAttribute("useragent", this.browserUserAgent());
+      iframe.setAttribute("src", url);
+      wrap.addClass("is-webview");
+    } else {
+      iframe = wrap.createEl("iframe", {
+        attr: { src: url, sandbox: WEB_SANDBOX, allow: "fullscreen; clipboard-write; encrypted-media; picture-in-picture", title: url },
+      });
+    }
     iframe.style.height = height + "px";
     if (opts && opts.fixed) { iframe.style.width = opts.fixed.w + "px"; wrap.addClass("is-fixed"); }
     const cap = wrap.createEl("a", { cls: "html-embed-anywhere-caption external-link", text: shortUrl(url), href: url });
@@ -814,6 +839,22 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     const child = new MarkdownRenderChild(wrap);
     ctx.addChild(child);
     this.fitToCanvasCard(wrap, iframe, cap, child, opts);
+  }
+
+  // A normal Chrome user agent: some sign-in pages refuse "embedded" browsers that announce
+  // themselves as Electron/Obsidian.
+  browserUserAgent() {
+    return navigator.userAgent.replace(/\s*obsidian\/\S+/i, "").replace(/\s*Electron\/\S+/i, "");
+  }
+
+  async clearWebSession() {
+    try {
+      const remote = require("@electron/remote");
+      const ses = remote.session.fromPartition("persist:" + (this.settings.webSession || "html-embed-anywhere"));
+      await ses.clearStorageData();
+      await ses.clearCache();
+      new Notice("Web embeds: logins and cache cleared on this device.");
+    } catch (e) { new Notice("Could not clear the web session: " + e.message); }
   }
 
   // Canvas cards get two controls under the embed:

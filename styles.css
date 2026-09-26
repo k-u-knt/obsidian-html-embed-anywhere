@@ -1,4 +1,5 @@
 /* HTML Embed Anywhere */
+.html-embed-anywhere webview { display: flex; width: 100%; border-radius: var(--radius-s, 6px); overflow: hidden; background: #fff; }
 .html-embed-anywhere iframe {
   display: block;
   width: 100%;
@@ -21,8 +22,10 @@
 
 /* Canvas: the embed is inert (so the card's resize handles, connection points and dragging work)
    until you select the card and press "Interact". */
-.html-embed-anywhere.is-in-canvas:not(.is-interactive) iframe { pointer-events: none; }
-.html-embed-anywhere.is-in-canvas.is-interactive iframe { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.html-embed-anywhere.is-in-canvas:not(.is-interactive) iframe,
+.html-embed-anywhere.is-in-canvas:not(.is-interactive) webview { pointer-events: none; }
+.html-embed-anywhere.is-in-canvas.is-interactive iframe,
+.html-embed-anywhere.is-in-canvas.is-interactive webview { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .html-embed-anywhere-bar {
   display: flex;
   align-items: center;
