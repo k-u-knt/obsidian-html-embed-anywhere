@@ -73,7 +73,9 @@ Only embed HTML you trust. Scripts inside a local file **do run**, but the frame
 
 Embedded web pages run under their own website's origin (as in a browser tab), which is separate from Obsidian's, so they cannot read your vault either.
 
-Tip: Obsidian hides file types it can't open (such as `.html`) in the file list unless *Settings → Files and links → Detect all file extensions* is on.
+### Opening .html files
+
+The plugin registers `.html` / `.htm` as a file type, so HTML files are **always listed in the file explorer** (no need for *Detect all file extensions*) and **open rendered in their own Obsidian tab** when you click them or follow a link. Use the tab's *Open in default browser* button to open them outside Obsidian. (If another plugin already handles `.html`, that one keeps it.)
 
 ### Canvas position fix
 

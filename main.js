@@ -18,8 +18,10 @@
  */
 const {
   Plugin, Modal, MarkdownRenderChild, MarkdownView, TFile, normalizePath,
-  FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder, setIcon,
+  FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder, setIcon, FileView,
 } = require("obsidian");
+
+const VIEW_TYPE_HTML = "html-embed-anywhere-file";
 
 const DEFAULTS = {
   defaultHeight: "600",
@@ -111,6 +113,40 @@ class DropChoiceModal extends Modal {
   }
 }
 
+// Opening an .html file (file list, links, quick switcher) shows it rendered inside Obsidian.
+// Registering the extension also makes Obsidian treat .html as a known file type, so it is always
+// listed in the file explorer — independent of "Detect all file extensions".
+class HtmlFileView extends FileView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this.url = null;
+    this.addAction("external-link", "Open in default browser", () => {
+      if (this.file && this.app.openWithDefaultApp) this.app.openWithDefaultApp(this.file.path);
+    });
+  }
+  getViewType() { return VIEW_TYPE_HTML; }
+  getDisplayText() { return this.file ? this.file.basename : "HTML"; }
+  getIcon() { return "file-code"; }
+  canAcceptExtension(ext) { return /^html?$/i.test(ext); }
+  async onLoadFile(file) {
+    this.clear();
+    this.contentEl.addClass("html-embed-anywhere-fileview");
+    let html;
+    try { html = await this.app.vault.read(file); }
+    catch (e) { this.contentEl.createDiv({ cls: "html-embed-anywhere-error", text: "Could not read " + file.path }); return; }
+    html = this.plugin.prepareHtml(file, html, { auto: false, fit: true, token: "view" });
+    this.url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+    this.contentEl.createEl("iframe", { attr: { src: this.url, sandbox: LOCAL_SANDBOX, title: file.name } });
+  }
+  async onUnloadFile() { this.clear(); }
+  clear() {
+    if (this.url) URL.revokeObjectURL(this.url);
+    this.url = null;
+    this.contentEl.empty();
+  }
+}
+
 class HtmlFrame extends MarkdownRenderChild {
   constructor(el, url) { super(el); this.url = url; }
   onunload() { if (this.url) URL.revokeObjectURL(this.url); }
@@ -170,6 +206,9 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
       if (fr && e.source === fr.contentWindow && d.h > 0) fr.style.height = Math.min(Math.max(d.h, 50), 4000) + "px";
     });
     this.registerMarkdownCodeBlockProcessor("html-embed", (src, el, ctx) => this.render(src, el, ctx));
+    this.registerView(VIEW_TYPE_HTML, (leaf) => new HtmlFileView(leaf, this));
+    try { this.registerExtensions(["html", "htm"], VIEW_TYPE_HTML); }
+    catch (e) { console.warn("HTML Embed Anywhere: .html is already handled by another plugin", e); }
 
     // commands
     const pickFile = () => new HtmlPicker(this.app, (f) => this.embedIntoActiveView(f)).open();
@@ -625,6 +664,37 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     return o;
   }
 
+  // Adds <base> (relative assets), the Plotly-fit / unhover helper and, for "auto" height, the
+  // content-height reporter to a local HTML document before it is loaded into a sandboxed frame.
+  prepareHtml(file, html, { auto, fit, token }) {
+    const base = this.app.vault.getResourcePath(file).split("?")[0].replace(/[^/]*$/, "");
+    const head = /<base\s/i.test(html) ? "" : `<base href="${base}">`;
+    const tail = auto
+      ? `<script>(function(){var t=${JSON.stringify(token)},last=0;function s(){var b=document.body;if(!b)return;var m=0;for(var i=0;i<b.children.length;i++){var r=b.children[i].getBoundingClientRect();if(r.height)m=Math.max(m,r.bottom+window.scrollY)}var h=Math.ceil(m+parseFloat(getComputedStyle(b).marginBottom||0));if(h&&h!==last){last=h;parent.postMessage({__htmlEmbedAnywhere:t,h:h},"*")}}addEventListener("load",s);if(window.ResizeObserver)new ResizeObserver(s).observe(document.body||document.documentElement);})();</script>`
+      : "";
+    if (head) {
+      if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + head);
+      else if (/<html[^>]*>/i.test(html)) html = html.replace(/<html[^>]*>/i, (m) => m + head);
+      else if (/^\s*<!doctype[^>]*>/i.test(html)) html = html.replace(/^\s*<!doctype[^>]*>/i, (m) => m + head);
+      else html = head + html;
+    }
+    // Helper inside the frame: a single Plotly figure is resized to fill the frame (so it follows the
+    // card / note size, or the fixed size), and hover labels are cleared when the embed is locked.
+    const helper = `<script>(function(){var FIT=${fit ? "true" : "false"};` +
+      `function plots(){return window.Plotly?Array.prototype.slice.call(document.querySelectorAll(".js-plotly-plot")):[]}` +
+      `function fit(){if(!FIT)return;var p=plots();if(p.length!==1)return;var d=document.documentElement;d.style.overflow="hidden";document.body.style.margin="0";` +
+      `var w=d.clientWidth,h=d.clientHeight;if(w>20&&h>20){try{Plotly.relayout(p[0],{width:w,height:h})}catch(e){}}}` +
+      `var q=0;function later(){cancelAnimationFrame(q);q=requestAnimationFrame(fit)}` +
+      `addEventListener("load",function(){fit();setTimeout(fit,300)});addEventListener("resize",later);` +
+      `addEventListener("message",function(e){var m=e.data;if(!m||!m.__htmlEmbedAnywhereCmd)return;` +
+      `if(m.__htmlEmbedAnywhereCmd==="unhover"){plots().forEach(function(g){try{Plotly.Fx.unhover(g)}catch(x){}})}` +
+      `if(m.__htmlEmbedAnywhereCmd==="fit")later()});})();</script>`;
+    html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, helper + "</body>") : html + helper;
+    if (tail) html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, tail + "</body>") : html + tail;
+
+    return html;
+  }
+
   async render(src, el, ctx) {
     const lines = src.split("\n").map((s) => s.trim()).filter(Boolean);
     if (!lines.length) return this.showError(el, "add a file path or URL on the first line");
@@ -642,32 +712,8 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     try { html = await this.app.vault.read(file); }
     catch (err) { return this.showError(el, "could not read " + file.path + " (" + err.message + ")"); }
 
-    const base = this.app.vault.getResourcePath(file).split("?")[0].replace(/[^/]*$/, "");
     const token = Math.random().toString(36).slice(2);
-    const head = /<base\s/i.test(html) ? "" : `<base href="${base}">`;
-    const tail = auto
-      ? `<script>(function(){var t=${JSON.stringify(token)},last=0;function s(){var b=document.body;if(!b)return;var m=0;for(var i=0;i<b.children.length;i++){var r=b.children[i].getBoundingClientRect();if(r.height)m=Math.max(m,r.bottom+window.scrollY)}var h=Math.ceil(m+parseFloat(getComputedStyle(b).marginBottom||0));if(h&&h!==last){last=h;parent.postMessage({__htmlEmbedAnywhere:t,h:h},"*")}}addEventListener("load",s);if(window.ResizeObserver)new ResizeObserver(s).observe(document.body||document.documentElement);})();</script>`
-      : "";
-    if (head) {
-      if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + head);
-      else if (/<html[^>]*>/i.test(html)) html = html.replace(/<html[^>]*>/i, (m) => m + head);
-      else if (/^\s*<!doctype[^>]*>/i.test(html)) html = html.replace(/^\s*<!doctype[^>]*>/i, (m) => m + head);
-      else html = head + html;
-    }
-    // Helper inside the frame: a single Plotly figure is resized to fill the frame (so it follows the
-    // card / note size, or the fixed size), and hover labels are cleared when the embed is locked.
-    const helper = `<script>(function(){var FIT=${auto ? "false" : "true"};` +
-      `function plots(){return window.Plotly?Array.prototype.slice.call(document.querySelectorAll(".js-plotly-plot")):[]}` +
-      `function fit(){if(!FIT)return;var p=plots();if(p.length!==1)return;var d=document.documentElement;d.style.overflow="hidden";document.body.style.margin="0";` +
-      `var w=d.clientWidth,h=d.clientHeight;if(w>20&&h>20){try{Plotly.relayout(p[0],{width:w,height:h})}catch(e){}}}` +
-      `var q=0;function later(){cancelAnimationFrame(q);q=requestAnimationFrame(fit)}` +
-      `addEventListener("load",function(){fit();setTimeout(fit,300)});addEventListener("resize",later);` +
-      `addEventListener("message",function(e){var m=e.data;if(!m||!m.__htmlEmbedAnywhereCmd)return;` +
-      `if(m.__htmlEmbedAnywhereCmd==="unhover"){plots().forEach(function(g){try{Plotly.Fx.unhover(g)}catch(x){}})}` +
-      `if(m.__htmlEmbedAnywhereCmd==="fit")later()});})();</script>`;
-    html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, helper + "</body>") : html + helper;
-    if (tail) html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, tail + "</body>") : html + tail;
-
+    html = this.prepareHtml(file, html, { auto, fit: !auto, token });
     const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
     const wrap = el.createDiv({ cls: "html-embed-anywhere" });
     const iframe = wrap.createEl("iframe", { attr: { src: url, sandbox: LOCAL_SANDBOX, title: file.name } });
