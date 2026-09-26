@@ -17,6 +17,9 @@ figures/umap_by_age.html
 
 - **Line 1**: the file — a vault path, a bare file name, or a `[[link]]` — or a web page URL (`https://…`).
 - **Line 2** (optional): height in pixels, or `auto` to fit the content. Defaults to the value in settings (600).
+- **`size WxH`** (optional, e.g. `size 900x500`): fixes the embed at that size instead of following the note width or card size. On a canvas the *Fit card / Fixed* button writes this line for you.
+
+A single Plotly figure inside the file is resized to fill the embed, so it follows the note width, the canvas card size, or the fixed size.
 
 You rarely need to type it:
 
@@ -44,7 +47,12 @@ Click the caption under an embed to open the file or page in your default browse
 
 Canvas cards containing an `html-embed` block render the HTML live, and the embed fills the card, so resizing the card resizes the figure. The plugin creates those cards for you from the command or a drop.
 
-The embed stays **inert** on the canvas, so the card behaves like any other card: drag it, resize it from its edges, and draw connections from it. To use the embedded page (hover, zoom, pan), **select the card and press _Interact_** under it; press **Done** — or just click elsewhere on the canvas — to go back.
+Select a card to show its two controls under the embed:
+
+| Control | States |
+|---|---|
+| **Size** | **Fit card** (default) — the embed, and a Plotly figure in it, follows the card as you resize it. **Fixed W×H** — click to freeze the current size; resizing the card no longer changes the plot (a smaller card scrolls). Click again to go back to *Fit card*. The fixed size is saved in the card (`size WxH`). |
+| **Lock** | **Locked** (default) — the embed is a static picture: no hover labels or tooltips, and the card can be dragged, resized and connected like any other card. **Interacting** — hover values, zoom, pan, select. It locks again when you click another card or the empty canvas. |
 
 ### Plotly tip
 
@@ -55,7 +63,7 @@ The embed stays **inert** on the canvas, so the card behaves like any other card
 - **Default height** — written into new embeds (pixels or `auto`).
 - **Canvas card width** — width of cards created on a canvas.
 - **Import folder** — where HTML files dropped from outside the vault are copied. Empty = Obsidian's attachment setting (*Files and links → Default location for new attachments*).
-- **Reuse identical files** (on by default) — before importing, the plugin checks whether a file with **exactly the same content** already exists anywhere in the vault, whatever its name or folder; if so it links to that file instead of creating `name 1.html`, `name 2.html`, …. The check is cheap: only files with the identical byte size (known from the vault index, no disk reads) are candidates, and those are compared by SHA-256, with hashes cached.
+- **Reuse identical files** (on by default) — applies to **every file you drop or paste from outside the vault** (HTML, images, PDFs, data …). Before importing, the plugin checks whether a file with **exactly the same content** already exists anywhere in the vault, whatever its name or folder; if so the new embed/link points to that file instead of creating `name 1.png`, `name 2.png`, …. You can drop the same file many times — each drop gets its own embed, all pointing to one file. Non-HTML files are otherwise handled like Obsidian does: imported into the attachment folder and embedded (`![[…]]` in notes, a file card on canvas); pasted screenshots are named `Pasted image <timestamp>.png`. The check is cheap: only files with the identical byte size (known from the vault index, no disk reads) are candidates, and those are compared by SHA-256, with hashes cached. Turn it off to leave non-HTML drops and pastes entirely to Obsidian.
 - **When an HTML file is dropped** — ask / always embed / always insert a link.
 - **When a web link is dropped** — ask / always embed / always insert a link / don't handle.
 
@@ -66,6 +74,10 @@ Only embed HTML you trust. Scripts inside a local file **do run**, but the frame
 Embedded web pages run under their own website's origin (as in a browser tab), which is separate from Obsidian's, so they cannot read your vault either.
 
 Tip: Obsidian hides file types it can't open (such as `.html`) in the file list unless *Settings → Files and links → Detect all file extensions* is on.
+
+### Canvas position fix
+
+Obsidian's canvas caches where it sits on screen and only refreshes that when it is resized. If the canvas tab moves without resizing — typically in a **stacked tab group** — the cache goes stale: zooming centres on the wrong spot, hovering no longer finds cards (no resize handles or connection points), and dropped items land away from the cursor. While this plugin is enabled it checks the cache against the canvas's real position before the canvas handles pointer, wheel and drop events, and refreshes it when it has moved. This fixes those symptoms for every canvas, not only HTML embeds.
 
 ## Limitations
 

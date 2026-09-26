@@ -31,7 +31,8 @@
   padding-top: 2px;
 }
 .html-embed-anywhere-bar .html-embed-anywhere-caption { padding-top: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.html-embed-anywhere-interact {
+.html-embed-anywhere-tools { display: flex; gap: 4px; flex: none; }
+.html-embed-anywhere-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -40,9 +41,13 @@
   padding: 2px 6px;
   font-size: var(--font-ui-smaller);
 }
-.html-embed-anywhere-interact svg { width: 14px; height: 14px; }
-.html-embed-anywhere-interact.is-active { color: var(--text-on-accent); background-color: var(--interactive-accent); }
-.canvas-node:not(.is-focused) .html-embed-anywhere-interact { visibility: hidden; }
+.html-embed-anywhere-btn svg { width: 14px; height: 14px; }
+.html-embed-anywhere-btn.is-active, .html-embed-anywhere-btn.is-active:hover { color: var(--text-on-accent); background-color: var(--interactive-accent); }
+.html-embed-anywhere-btn.is-active svg, .html-embed-anywhere-btn.is-active span { color: var(--text-on-accent); }
+.canvas-node:not(.is-focused) .html-embed-anywhere-tools { visibility: hidden; }
+/* Fixed size: the embed keeps its size; a smaller card scrolls. */
+.html-embed-anywhere.is-fixed { overflow: auto; }
+.html-embed-anywhere.is-fixed iframe { max-width: none; }
 
 /* Drop dialog */
 .html-embed-anywhere-drop-name {

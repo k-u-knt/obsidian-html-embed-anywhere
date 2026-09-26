@@ -140,7 +140,7 @@ class HtmlEmbedSettings extends PluginSettingTab {
         .onChange(async (v) => { s.importFolder = v.trim().replace(/^\/+|\/+$/g, ""); await save(); }));
     new Setting(containerEl)
       .setName("Reuse identical files")
-      .setDesc("If a file with exactly the same content is already anywhere in the vault (whatever its name), link to it instead of importing another copy. Only files of the same size are read to check.")
+      .setDesc("For any file you drop or paste from outside the vault (HTML, images, PDFs, data …): if a file with exactly the same content is already anywhere in the vault, whatever its name, embed/link that file instead of importing another copy. Only files of the same size are read to check. Turn off to leave non-HTML drops and pastes entirely to Obsidian.")
       .addToggle((t) => t.setValue(s.reuseIdentical !== false).onChange(async (v) => { s.reuseIdentical = v; await save(); }));
     new Setting(containerEl)
       .setName("When an HTML file is dropped")
@@ -193,7 +193,26 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     this.dragFromInside = false;
     this.registerDomEvent(document, "dragstart", () => { this.dragFromInside = true; }, { capture: true });
     this.registerDomEvent(document, "dragend", () => { this.dragFromInside = false; }, { capture: true });
+    // The pointer position is tracked from dragover: the coordinates on the final drop event are not
+    // reliable for drags coming from outside the app (Finder, browsers) on every platform.
+    this.lastDragPoint = null;
+    this.registerDomEvent(document, "dragover", (e) => {
+      if (e.clientX || e.clientY) this.lastDragPoint = { x: e.clientX, y: e.clientY, t: Date.now() };
+      this.syncCanvasGeometry(e);
+    }, { capture: true });
+
+    // Work around an Obsidian canvas glitch: the canvas caches its on-screen position and only
+    // refreshes it on resize. When the canvas tab moves without resizing (e.g. sliding in a stacked
+    // tab group), the cache goes stale and every pointer position is mapped to the wrong place —
+    // zoom centres somewhere else, hovering never finds a card (no resize handles or connection
+    // points) and drops land away from the cursor. Before the canvas handles pointer/wheel events,
+    // check the cache against the real position and refresh it if it moved.
+    const sync = (e) => this.syncCanvasGeometry(e);
+    this.registerDomEvent(document, "pointermove", sync, { capture: true, passive: true });
+    this.registerDomEvent(document, "pointerdown", sync, { capture: true, passive: true });
+    this.registerDomEvent(document, "wheel", sync, { capture: true, passive: true });
     this.registerDomEvent(document, "drop", (evt) => this.onDrop(evt), { capture: true });
+    this.registerEvent(this.app.workspace.on("editor-paste", (evt, editor, info) => this.onPaste(evt, editor, info)));
   }
 
   async saveSettings() { await this.saveData(this.settings); }
@@ -231,7 +250,11 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     const internal = this.draggedVaultHtml();
     const external = internal.length ? [] : this.droppedExternalHtml(evt);
     const web = internal.length || external.length ? null : this.droppedUrl(evt);
-    if (!internal.length && !external.length && !web) return;
+    if (!internal.length && !external.length && !web) {
+      const other = this.settings.reuseIdentical ? Array.from((evt.dataTransfer && evt.dataTransfer.files) || []) : [];
+      if (other.length) this.onDropOtherFiles(evt, target, other);
+      return;
+    }
     const mode = web ? this.settings.onDropUrl : this.settings.onDropFile;
     if (mode === "obsidian") return;
 
@@ -241,9 +264,15 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     this.dragFromInside = false;
 
     // Remember where it was dropped before any dialog opens.
+    this.syncCanvasGeometry(evt, true);
+    const pt = this.dropPoint(evt);
+    this.lastDropInfo = { drop: { x: evt.clientX, y: evt.clientY }, used: pt, target: target.kind, at: new Date().toISOString() }; // for troubleshooting
+    const canvas = target.kind === "canvas" ? target.view.canvas : null;
     const where = target.kind === "note"
-      ? this.offsetAt(target.view.editor, evt)
-      : (target.view.canvas.posFromEvt ? target.view.canvas.posFromEvt(evt) : null);
+      ? this.offsetAt(target.view.editor, pt)
+      : (canvas.posFromClient ? canvas.posFromClient(pt) : canvas.posFromEvt ? canvas.posFromEvt({ clientX: pt.x, clientY: pt.y }) : null);
+    this.lastDropInfo.where = where;
+    if (canvas) this.lastDropInfo.view = { tx: canvas.tx, ty: canvas.ty, scale: canvas.scale, rect: (() => { const r = canvas.wrapperEl.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; })() };
 
     (async () => {
       let choice = mode;
@@ -273,6 +302,59 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     })();
   }
 
+  // Any other files dropped from outside the vault (images, PDFs, data, mixed selections …) are
+  // handled like Obsidian does — imported into the attachment folder and embedded at the drop point —
+  // except that a file whose content is already in the vault is reused instead of copied again.
+  onDropOtherFiles(evt, target, files) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    this.syncCanvasGeometry(evt, true);
+    const pt = this.dropPoint(evt);
+    const canvas = target.kind === "canvas" ? target.view.canvas : null;
+    const where = target.kind === "note" ? this.offsetAt(target.view.editor, pt) : canvas.posFromClient ? canvas.posFromClient(pt) : null;
+    (async () => {
+      const src = target.view.file ? target.view.file.path : "";
+      const items = await this.importExternal(files, src, { attachment: true });
+      if (!items.length) return;
+      if (target.kind === "note") {
+        const ed = target.view.editor;
+        if (where != null) ed.setCursor(ed.offsetToPos(Math.min(where, ed.getValue().length)));
+        this.insertEmbeds(ed, items, target.view.file);
+      } else {
+        items.forEach((f, i) => {
+          const at = where ? { x: where.x + i * 40, y: where.y + i * 40 } : this.centerPos(canvas, 400, 400);
+          try { canvas.createFileNode({ file: f, pos: at, size: { width: 400, height: 400 }, focus: false, save: true }); }
+          catch (e) { new Notice("Could not add " + f.name + " to the canvas: " + e.message); }
+        });
+        if (canvas.requestSave) canvas.requestSave();
+      }
+    })();
+  }
+
+  insertEmbeds(editor, files, sourceFile) {
+    const text = files.map((f) => "!" + this.app.fileManager.generateMarkdownLink(f, sourceFile ? sourceFile.path : "")).join("\n");
+    const cur = editor.getCursor();
+    const start = editor.posToOffset(cur);
+    editor.replaceRange(text, cur);
+    editor.setCursor(editor.offsetToPos(start + text.length));
+  }
+
+  // Pasted files (e.g. screenshots): same de-duplication as drops.
+  onPaste(evt, editor, info) {
+    if (evt.defaultPrevented || !this.settings.reuseIdentical) return;
+    const cd = evt.clipboardData;
+    const files = Array.from((cd && cd.files) || []);
+    if (!files.length || (cd.getData("text/plain") || "").trim()) return; // text pastes: leave to Obsidian
+    evt.preventDefault();
+    const sourceFile = info && info.file;
+    (async () => {
+      const stamp = window.moment ? window.moment().format("YYYYMMDDHHmmss") : String(Date.now());
+      const rename = (f) => (/^image\.(png|jpe?g|gif|webp)$/i.test(f.name) ? `Pasted image ${stamp}.${f.name.split(".").pop()}` : f.name);
+      const items = await this.importExternal(files, sourceFile ? sourceFile.path : "", { attachment: true, rename });
+      if (items.length) this.insertEmbeds(editor, items, sourceFile);
+    })();
+  }
+
   askDropChoice(isWeb, name, kind) {
     const where = kind === "canvas" ? "this canvas" : "this note";
     const opts = isWeb
@@ -281,9 +363,31 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     return new Promise((resolve) => new DropChoiceModal(this.app, opts, resolve).open());
   }
 
-  offsetAt(editor, evt) {
+  syncCanvasGeometry(e, force) {
+    const now = Date.now();
+    if (!force && e && e.type === "pointermove" && now - (this.lastGeometrySync || 0) < 120) return;
+    this.lastGeometrySync = now;
+    const t = e && e.target;
+    const wrapper = t && t.closest ? t.closest(".canvas-wrapper") : null;
+    if (!wrapper) return;
+    const leaf = this.app.workspace.getLeavesOfType("canvas").find((l) => l.view.canvas && l.view.canvas.wrapperEl === wrapper);
+    const c = leaf && leaf.view.canvas;
+    if (!c || !c.canvasRect || typeof c.onResize !== "function") return;
+    const r = wrapper.getBoundingClientRect(), cr = c.canvasRect;
+    if (Math.abs(cr.left - r.left) > 1 || Math.abs(cr.top - r.top) > 1 || Math.abs(cr.width - r.width) > 1 || Math.abs(cr.height - r.height) > 1) {
+      try { c.onResize(); } catch (_) { /* leave the canvas alone */ }
+    }
+  }
+
+  dropPoint(evt) {
+    const lp = this.lastDragPoint;
+    if (lp && Date.now() - lp.t < 1000) return { x: lp.x, y: lp.y };
+    return { x: evt.clientX, y: evt.clientY };
+  }
+
+  offsetAt(editor, pt) {
     try {
-      const off = editor.cm && editor.cm.posAtCoords({ x: evt.clientX, y: evt.clientY });
+      const off = editor.cm && editor.cm.posAtCoords({ x: pt.x, y: pt.y });
       return off != null ? off : editor.posToOffset(editor.getCursor());
     } catch (_) { return null; }
   }
@@ -305,19 +409,23 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     return list;
   }
 
-  async importExternal(files, sourcePath) {
+  async importExternal(files, sourcePath, opts = {}) {
     // Copy dropped files into the vault — unless a file with exactly the same content is already
     // there (under any name, in any folder), in which case that file is reused.
+    // HTML files go to the plugin's Import folder; other files (opts.attachment) follow Obsidian's
+    // attachment setting, exactly like Obsidian's own drop/paste handling.
     const out = [], reused = [];
     for (const f of files) {
       try {
         const buf = await f.arrayBuffer();
-        const folder = await this.importFolderFor(f.name, sourcePath);
-        const same = this.settings.reuseIdentical ? await this.findIdentical(buf, folder, f.name) : null;
+        const name = (opts.rename && opts.rename(f)) || f.name;
+        const useOwn = this.settings.importFolder && !opts.attachment;
+        const folder = useOwn ? await this.importFolderFor(name, sourcePath) : await this.attachmentFolderFor(name, sourcePath);
+        const same = this.settings.reuseIdentical ? await this.findIdentical(buf, folder, name) : null;
         if (same) { out.push(same); reused.push(same.path); continue; }
-        const path = this.settings.importFolder
-          ? this.availablePath(folder, f.name)
-          : await this.app.fileManager.getAvailablePathForAttachment(f.name, sourcePath);
+        const path = useOwn
+          ? this.availablePath(folder, name)
+          : await this.app.fileManager.getAvailablePathForAttachment(name, sourcePath);
         out.push(await this.app.vault.createBinary(path, buf));
       } catch (e) { new Notice("Could not import " + f.name + ": " + e.message); }
     }
@@ -361,6 +469,11 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     let h1 = 0x811c9dc5, h2 = 0x01000193;
     for (let i = 0; i < a.length; i++) { h1 = Math.imul(h1 ^ a[i], 16777619) >>> 0; h2 = Math.imul(h2 ^ a[i], 2246822519) >>> 0; }
     return a.length + ":" + h1.toString(16) + h2.toString(16);
+  }
+
+  async attachmentFolderFor(name, sourcePath) {
+    const p = await this.app.fileManager.getAvailablePathForAttachment(name, sourcePath);
+    return p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
   }
 
   async importFolderFor(name, sourcePath) {
@@ -450,7 +563,8 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
         // Web pages: Obsidian's own web card (resizable, interactive).
         canvas.createLinkNode({ url: this.target(item), pos: at, size, focus: false, save: true });
       } else {
-        canvas.createTextNode({ pos: at, size, text: this.block(item, String(h)), focus: false, save: true });
+        const node = canvas.createTextNode({ pos: at, size, text: this.block(item, String(h)), focus: false, save: true });
+        if (this.lastDropInfo) this.lastDropInfo.placed = { pos, at, node: node ? [node.x, node.y] : null };
       }
       if (canvas.requestSave) canvas.requestSave();
     } catch (e) {
@@ -497,17 +611,32 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     return viaLink instanceof TFile ? viaLink : null;
   }
 
+  // Block options after the first line: a height ("600" / "auto") and optionally "size WxH",
+  // which fixes the embed (and a Plotly figure inside it) at that size instead of following the card.
+  parseOptions(lines) {
+    const o = { height: null, fixed: null };
+    for (const raw of lines.slice(1)) {
+      const l = raw.toLowerCase();
+      const m = l.match(/^size\s*[:=]?\s*(\d+)\s*[x×]\s*(\d+)$/);
+      if (m) o.fixed = { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
+      else if (l === "auto" || /^\d+$/.test(l)) o.height = l;
+    }
+    if (!o.height) o.height = (this.settings.defaultHeight || "600").toLowerCase();
+    return o;
+  }
+
   async render(src, el, ctx) {
     const lines = src.split("\n").map((s) => s.trim()).filter(Boolean);
     if (!lines.length) return this.showError(el, "add a file path or URL on the first line");
-    const hArg = (lines[1] || this.settings.defaultHeight || "600").toLowerCase();
+    const opts = this.parseOptions(lines);
+    const hArg = opts.height;
 
-    if (isUrl(lines[0])) return this.renderUrl(lines[0], hArg, el, ctx);
+    if (isUrl(lines[0])) return this.renderUrl(lines[0], hArg, el, ctx, opts);
 
     const file = this.resolve(lines[0], ctx.sourcePath);
     if (!file) return this.showError(el, "file not found: " + lines[0]);
-    const auto = hArg === "auto";
-    const height = auto ? 400 : parseInt(hArg, 10) || 600;
+    const auto = hArg === "auto" && !opts.fixed;
+    const height = opts.fixed ? opts.fixed.h : auto ? 400 : parseInt(hArg, 10) || 600;
 
     let html;
     try { html = await this.app.vault.read(file); }
@@ -525,66 +654,109 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
       else if (/^\s*<!doctype[^>]*>/i.test(html)) html = html.replace(/^\s*<!doctype[^>]*>/i, (m) => m + head);
       else html = head + html;
     }
+    // Helper inside the frame: a single Plotly figure is resized to fill the frame (so it follows the
+    // card / note size, or the fixed size), and hover labels are cleared when the embed is locked.
+    const helper = `<script>(function(){var FIT=${auto ? "false" : "true"};` +
+      `function plots(){return window.Plotly?Array.prototype.slice.call(document.querySelectorAll(".js-plotly-plot")):[]}` +
+      `function fit(){if(!FIT)return;var p=plots();if(p.length!==1)return;var d=document.documentElement;d.style.overflow="hidden";document.body.style.margin="0";` +
+      `var w=d.clientWidth,h=d.clientHeight;if(w>20&&h>20){try{Plotly.relayout(p[0],{width:w,height:h})}catch(e){}}}` +
+      `var q=0;function later(){cancelAnimationFrame(q);q=requestAnimationFrame(fit)}` +
+      `addEventListener("load",function(){fit();setTimeout(fit,300)});addEventListener("resize",later);` +
+      `addEventListener("message",function(e){var m=e.data;if(!m||!m.__htmlEmbedAnywhereCmd)return;` +
+      `if(m.__htmlEmbedAnywhereCmd==="unhover"){plots().forEach(function(g){try{Plotly.Fx.unhover(g)}catch(x){}})}` +
+      `if(m.__htmlEmbedAnywhereCmd==="fit")later()});})();</script>`;
+    html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, helper + "</body>") : html + helper;
     if (tail) html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, tail + "</body>") : html + tail;
 
     const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
     const wrap = el.createDiv({ cls: "html-embed-anywhere" });
     const iframe = wrap.createEl("iframe", { attr: { src: url, sandbox: LOCAL_SANDBOX, title: file.name } });
     iframe.style.height = height + "px";
+    if (opts.fixed) { iframe.style.width = opts.fixed.w + "px"; wrap.addClass("is-fixed"); }
     const cap = wrap.createDiv({ cls: "html-embed-anywhere-caption", text: file.name });
     cap.setAttr("title", "Open " + file.path + " in the default browser");
     cap.addEventListener("click", () => { if (this.app.openWithDefaultApp) this.app.openWithDefaultApp(file.path); });
     const child = new HtmlFrame(wrap, url);
     if (auto) { this.frames.set(token, iframe); child.register(() => this.frames.delete(token)); }
     ctx.addChild(child);
-    this.fitToCanvasCard(wrap, iframe, cap, child);
+    this.fitToCanvasCard(wrap, iframe, cap, child, opts);
   }
 
-  renderUrl(url, hArg, el, ctx) {
-    const height = parseInt(hArg, 10) || parseInt(this.settings.defaultHeight, 10) || 600;
+  renderUrl(url, hArg, el, ctx, opts) {
+    const height = (opts && opts.fixed && opts.fixed.h) || parseInt(hArg, 10) || parseInt(this.settings.defaultHeight, 10) || 600;
     const wrap = el.createDiv({ cls: "html-embed-anywhere is-web" });
     const iframe = wrap.createEl("iframe", {
       attr: { src: url, sandbox: WEB_SANDBOX, allow: "fullscreen; clipboard-write; encrypted-media; picture-in-picture", title: url },
     });
     iframe.style.height = height + "px";
+    if (opts && opts.fixed) { iframe.style.width = opts.fixed.w + "px"; wrap.addClass("is-fixed"); }
     const cap = wrap.createEl("a", { cls: "html-embed-anywhere-caption external-link", text: shortUrl(url), href: url });
     cap.setAttr("title", "Open in browser — if the frame stays blank, this site does not allow embedding");
     const child = new MarkdownRenderChild(wrap);
     ctx.addChild(child);
-    this.fitToCanvasCard(wrap, iframe, cap, child);
+    this.fitToCanvasCard(wrap, iframe, cap, child, opts);
   }
 
-  // In a canvas card the frame fills the card (resizing the card resizes the embed) and stays inert,
-  // so the card handles, connection points and dragging work like any other card. Select the card
-  // and press "Interact" to use the embedded page; it switches off again when the card is deselected.
-  fitToCanvasCard(wrap, iframe, cap, child, tries = 0) {
+  // Canvas cards get two controls under the embed:
+  //   • Size  — "Fit card": the embed (and a Plotly figure in it) follows the card size;
+  //             "Fixed W×H": it keeps that size whatever the card size (saved in the card as "size WxH").
+  //   • Lock  — locked (default): the embed is a static picture; the card can be dragged, resized and
+  //             connected, and hovering shows nothing. Unlocked: hover, zoom, pan, read values.
+  //             It locks again when the card is deselected.
+  fitToCanvasCard(wrap, iframe, cap, child, opts, tries = 0) {
     const card = wrap.closest(".canvas-node-content");
     if (!card) {
-      if (!wrap.isConnected && tries < 30) window.requestAnimationFrame(() => this.fitToCanvasCard(wrap, iframe, cap, child, tries + 1));
+      if (!wrap.isConnected && tries < 30) window.requestAnimationFrame(() => this.fitToCanvasCard(wrap, iframe, cap, child, opts, tries + 1));
       return;
     }
     wrap.addClass("is-in-canvas");
     this.frames.forEach((fr, t) => { if (fr === iframe) this.frames.delete(t); }); // card size wins over "auto"
+    const fixed = opts && opts.fixed;
 
-    // caption row + Interact toggle
     const bar = createDiv({ cls: "html-embed-anywhere-bar" });
     cap.replaceWith(bar);
     bar.appendChild(cap);
-    const btn = bar.createEl("button", { cls: "html-embed-anywhere-interact clickable-icon", attr: { "aria-label": "Interact with the embedded page" } });
-    setIcon(btn, "mouse-pointer-click");
-    btn.createSpan({ text: "Interact" });
-    const setInteractive = (on) => {
-      wrap.toggleClass("is-interactive", on);
-      btn.toggleClass("is-active", on);
-      btn.lastChild.textContent = on ? "Done" : "Interact";
+    const tools = bar.createDiv({ cls: "html-embed-anywhere-tools" });
+    const mkBtn = (cls, icon, label, tip) => {
+      const b = tools.createEl("button", { cls: "html-embed-anywhere-btn clickable-icon " + cls, attr: { "aria-label": tip } });
+      setIcon(b, icon);
+      b.createSpan({ text: label });
+      return b;
     };
-    btn.addEventListener("click", (e) => { e.stopPropagation(); setInteractive(!wrap.hasClass("is-interactive")); });
+    const setBtn = (b, icon, label, tip) => { b.empty(); setIcon(b, icon); b.createSpan({ text: label }); b.setAttr("aria-label", tip); };
+
+    // size toggle
+    const sizeBtn = mkBtn("html-embed-anywhere-size", fixed ? "pin" : "maximize-2",
+      fixed ? `Fixed ${fixed.w}×${fixed.h}` : "Fit card",
+      fixed ? "Size is fixed — click to follow the card size again" : "Follows the card size — click to fix the current size");
+    if (fixed) sizeBtn.addClass("is-active");
+    sizeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const next = fixed ? null : { w: Math.round(iframe.clientWidth), h: Math.round(iframe.clientHeight) };
+      this.setCanvasCardSize(wrap, next);
+    });
+
+    // lock / interact toggle
+    const lockBtn = mkBtn("html-embed-anywhere-interact", "lock", "Locked", "Locked (static) — click to interact with the plot");
+    const setInteractive = (on) => {
+      if (wrap.hasClass("is-interactive") === on) return;
+      wrap.toggleClass("is-interactive", on);
+      lockBtn.toggleClass("is-active", on);
+      if (on) setBtn(lockBtn, "unlock", "Interacting", "Interactive — click to lock (static)");
+      else {
+        setBtn(lockBtn, "lock", "Locked", "Locked (static) — click to interact with the plot");
+        try { iframe.contentWindow && iframe.contentWindow.postMessage({ __htmlEmbedAnywhereCmd: "unhover" }, "*"); } catch (_) { /* ignore */ }
+      }
+    };
+    lockBtn.addEventListener("click", (e) => { e.stopPropagation(); setInteractive(!wrap.hasClass("is-interactive")); });
     const node = wrap.closest(".canvas-node");
     if (node) {
       const mo = new MutationObserver(() => { if (!node.hasClass("is-focused")) setInteractive(false); });
       mo.observe(node, { attributes: true, attributeFilter: ["class"] });
       child.register(() => mo.disconnect());
     }
+
+    if (fixed) return; // fixed: the embed keeps its size; the card scrolls if it is smaller
 
     const fit = () => {
       if (!card.clientHeight) return;
@@ -598,5 +770,24 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     ro.observe(card);
     child.register(() => ro.disconnect());
     fit();
+  }
+
+  // Write (or remove) the "size WxH" option into the canvas card's text; the card then re-renders.
+  setCanvasCardSize(wrap, size) {
+    const nodeEl = wrap.closest(".canvas-node");
+    const leaf = this.app.workspace.getLeavesOfType("canvas").find((l) => l.view.canvas && l.view.containerEl.contains(wrap));
+    const node = leaf && [...leaf.view.canvas.nodes.values()].find((n) => n.nodeEl === nodeEl);
+    if (!node) { new Notice("Could not find the canvas card."); return; }
+    const data = node.getData();
+    if (typeof data.text !== "string") return;
+    const text = data.text.replace(/```html-embed\n([\s\S]*?)```/, (all, body) => {
+      const kept = body.split("\n").filter((l) => l.trim() && !/^\s*size\s*[:=]?\s*\d+\s*[x×]\s*\d+\s*$/i.test(l));
+      if (size) kept.push(`size ${size.w}x${size.h}`);
+      return "```html-embed\n" + kept.join("\n") + "\n```";
+    });
+    if (text === data.text) return;
+    if (typeof node.setText === "function") node.setText(text);
+    else node.setData(Object.assign({}, data, { text }));
+    if (leaf.view.canvas.requestSave) leaf.view.canvas.requestSave();
   }
 };
