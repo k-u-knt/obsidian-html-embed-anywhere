@@ -79,9 +79,11 @@ The plugin registers `.html` / `.htm` as a file type, so HTML files are **always
 
 ### Web pages that need a sign-in
 
-On desktop, embedded web pages run as a **full Chromium browser tab** (Electron `<webview>`) in a **persistent session** of their own: cookies, logins, local storage/IndexedDB, service workers and the HTTP cache are kept across restarts. Services that need an account — Paperpile, Google apps, dashboards — work: sign in once inside the embed and stay signed in. A plain `<iframe>` can't do this, because browsers treat an embedded site's cookies and storage as third-party and block or partition them (typical symptoms: "problem syncing your data", endless sign-in loops).
+On desktop, embedded web pages run as a **full Chromium browser tab** (Electron `<webview>`) in a **persistent session** of their own: cookies, logins, local storage/IndexedDB, service workers and the HTTP cache are kept across restarts. Services that need an account — Paperpile, dashboards and the like — work: sign in once inside the embed and stay signed in. A plain `<iframe>` can't do this, because browsers treat an embedded site's cookies and storage as third-party and block or partition them (typical symptoms: "problem syncing your data", endless sign-in loops).
 
 *Settings → Web pages*: choose **Browser tab** (default) or **Simple frame**, and **Clear saved logins and cache** for this device. On iPhone/iPad only simple frames exist, so sign-in-dependent sites may not work there.
+
+**Google accounts:** Google refuses to sign in inside any embedded browser ("This browser or app may not be secure"). Its checks go well beyond the user agent (a Firefox or full Chrome identity is still rejected), so there is no reliable workaround. When an embed reaches Google's sign-in page the plugin shows a notice with **Back** and **Open in browser**. Use the site's own email/password sign-in (or Microsoft / Apple) instead — e.g. Paperpile lets you switch a Google-created account to email + password under *Settings → Account → Change email*.
 
 ### Protect vault settings (multi-device sync)
 

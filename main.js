@@ -179,7 +179,7 @@ class HtmlEmbedSettings extends PluginSettingTab {
     new Setting(containerEl).setName("Web pages").setHeading();
     new Setting(containerEl)
       .setName("Web page engine (desktop)")
-      .setDesc("Browser tab: embedded web pages run as a full Chromium browser tab with its own persistent session — logins, cookies, local storage and cache are kept, so services that need a sign-in (Paperpile, Google, dashboards …) work. Simple frame: a plain iframe (always used on iPhone/iPad, where logins inside embeds often fail).")
+      .setDesc("Browser tab: embedded web pages run as a full Chromium browser tab with its own persistent session — logins, cookies, local storage and cache are kept, so services that need a sign-in (Paperpile, dashboards …) work. Google itself refuses sign-in inside embedded browsers, so use a site's email/password (or Microsoft/Apple) sign-in instead. Simple frame: a plain iframe (always used on iPhone/iPad, where logins inside embeds often fail).")
       .addDropdown((d) => d.addOptions({ browser: "Browser tab (keeps logins)", iframe: "Simple frame" })
         .setValue(s.webEngine || "browser").onChange(async (v) => { s.webEngine = v; await save(); }));
     new Setting(containerEl)
@@ -827,6 +827,7 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
       iframe.setAttribute("useragent", this.browserUserAgent());
       iframe.setAttribute("src", url);
       wrap.addClass("is-webview");
+      this.attachGoogleSigninNotice(iframe, wrap, url);
     } else {
       iframe = wrap.createEl("iframe", {
         attr: { src: url, sandbox: WEB_SANDBOX, allow: "fullscreen; clipboard-write; encrypted-media; picture-in-picture", title: url },
@@ -836,9 +837,35 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     if (opts && opts.fixed) { iframe.style.width = opts.fixed.w + "px"; wrap.addClass("is-fixed"); }
     const cap = wrap.createEl("a", { cls: "html-embed-anywhere-caption external-link", text: shortUrl(url), href: url });
     cap.setAttr("title", "Open in browser — if the frame stays blank, this site does not allow embedding");
-    const child = new MarkdownRenderChild(wrap);
+    const child = new MarkdownRenderChild(el);
     ctx.addChild(child);
     this.fitToCanvasCard(wrap, iframe, cap, child, opts);
+  }
+
+  // Google refuses sign-in inside any embedded browser ("This browser or app may not be secure"); its
+  // checks go far beyond the user agent, so they cannot be worked around reliably. When an embed lands on
+  // Google's sign-in pages, explain this and offer a way back instead of leaving the user at a dead end.
+  attachGoogleSigninNotice(wv, wrap, startUrl) {
+    const isGoogleAuth = (u) => { try { return /(^|\.)accounts\.google\.com$/i.test(new URL(u).hostname); } catch (_) { return false; } };
+    let bar = null;
+    const hide = () => { if (bar) { bar.remove(); bar = null; } };
+    const show = (url) => {
+      if (bar) return;
+      bar = createDiv({ cls: "html-embed-anywhere-notice" });
+      wrap.prepend(bar);
+      bar.createSpan({ text: /\/rejected/.test(url)
+        ? "Google blocked this sign-in: Google does not allow signing in inside embedded browsers. "
+        : "Google does not allow signing in inside embedded browsers. " });
+      bar.createSpan({ text: "Sign in to the site with email and password (or Microsoft / Apple) instead, or open it in your browser." });
+      const tools = bar.createDiv({ cls: "html-embed-anywhere-notice-tools" });
+      const back = tools.createEl("button", { text: "Back", cls: "html-embed-anywhere-btn" });
+      back.onclick = () => { hide(); if (wv.canGoBack()) wv.goBack(); else wv.loadURL(startUrl); };
+      const open = tools.createEl("button", { text: "Open in browser", cls: "html-embed-anywhere-btn" });
+      open.onclick = () => window.open(startUrl);
+    };
+    const check = (e) => { if (isGoogleAuth(e.url)) show(e.url); else hide(); };
+    wv.addEventListener("did-navigate", check);
+    wv.addEventListener("did-navigate-in-page", (e) => { if (e.isMainFrame) check(e); });
   }
 
   // A normal Chrome user agent: some sign-in pages refuse "embedded" browsers that announce

@@ -1,7 +1,7 @@
 {
   "id": "html-embed-anywhere",
   "name": "HTML Embed Anywhere",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "minAppVersion": "1.5.0",
   "description": "Embed vault-local HTML files (Plotly, D3, reports) and web pages in notes and canvas cards. Insert with a command, the file menu, or drag and drop — choosing embed or link.",
   "author": "Kenta Ninomiya",
