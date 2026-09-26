@@ -77,6 +77,15 @@ Embedded web pages run under their own website's origin (as in a browser tab), w
 
 The plugin registers `.html` / `.htm` as a file type, so HTML files are **always listed in the file explorer** (no need for *Detect all file extensions*) and **open rendered in their own Obsidian tab** when you click them or follow a link. Use the tab's *Open in default browser* button to open them outside Obsidian. (If another plugin already handles `.html`, that one keeps it.)
 
+### Protect vault settings (multi-device sync)
+
+Syncing a vault between devices (iCloud, Syncthing, …) can write an older copy of `.obsidian/app.json` back, silently resetting settings — e.g. the attachment folder or *Detect all file extensions*. Under *Settings → HTML Embed Anywhere → Protect vault settings* you can pin:
+
+- **Attachment folder** (*Default location for new attachments*)
+- **Detect all file extensions**
+
+On every device where the plugin runs, pinned values are restored at start-up, whenever Obsidian reloads its settings, when the window regains focus, and every 30 s (a notice tells you when that happened). Change pinned values in the plugin settings or press *Pin current* — changes made only in Obsidian's own settings would be restored. On first run the current attachment folder (or the plugin's import folder) is pinned.
+
 ### Canvas position fix
 
 Obsidian's canvas caches where it sits on screen and only refreshes that when it is resized. If the canvas tab moves without resizing — typically in a **stacked tab group** — the cache goes stale: zooming centres on the wrong spot, hovering no longer finds cards (no resize handles or connection points), and dropped items land away from the cursor. While this plugin is enabled it checks the cache against the canvas's real position before the canvas handles pointer, wheel and drop events, and refreshes it when it has moved. This fixes those symptoms for every canvas, not only HTML embeds.

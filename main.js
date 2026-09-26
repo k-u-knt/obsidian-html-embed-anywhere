@@ -30,6 +30,12 @@ const DEFAULTS = {
   onDropUrl: "ask",  // ask | embed | link | obsidian (leave to Obsidian)
   importFolder: "",  // "" = Obsidian's attachment setting; otherwise a vault folder
   reuseIdentical: true, // reuse a vault file with identical content instead of importing a copy
+  guardConfig: true,    // keep the pinned vault settings below, even if another device overwrites them
+  pinnedConfig: null,   // e.g. { attachmentFolderPath: "Assets/Import", showUnsupportedFiles: true }
+};
+const GUARDED_KEYS = {
+  attachmentFolderPath: "Default location for new attachments",
+  showUnsupportedFiles: "Detect all file extensions",
 };
 const isHtml = (f) => f instanceof TFile && /^html?$/i.test(f.extension);
 const isHtmlName = (n) => /\.html?$/i.test(n || "");
@@ -168,6 +174,27 @@ class HtmlEmbedSettings extends PluginSettingTab {
       .setName("Canvas card width")
       .setDesc("Width in pixels of cards created on a canvas.")
       .addText((t) => t.setValue(String(s.canvasWidth)).onChange(async (v) => { s.canvasWidth = parseInt(v, 10) || 820; await save(); }));
+    new Setting(containerEl).setName("Protect vault settings").setHeading();
+    const pinned = s.pinnedConfig || {};
+    new Setting(containerEl)
+      .setName("Keep these Obsidian settings")
+      .setDesc("Settings sync between devices (iCloud etc.) can write an older copy of the vault's settings back, silently resetting them. When on, the plugin restores the values pinned below on every device where it runs. Change them here (or pin the current values) — changes made only in Obsidian's own settings would be restored.")
+      .addToggle((t) => t.setValue(s.guardConfig !== false).onChange(async (v) => { s.guardConfig = v; await save(); if (v) this.plugin.enforceConfig(); }));
+    new Setting(containerEl)
+      .setName("Attachment folder")
+      .setDesc(`Pinned "${GUARDED_KEYS.attachmentFolderPath}". Now: ${pinned.attachmentFolderPath === undefined ? "not pinned" : pinned.attachmentFolderPath}`)
+      .addText((t) => t.setPlaceholder("e.g. Assets/Import").setValue(pinned.attachmentFolderPath || "")
+        .onChange(async (v) => { s.pinnedConfig = Object.assign({}, s.pinnedConfig, { attachmentFolderPath: v.trim() || "/" }); await save(); this.plugin.enforceConfig(); }));
+    new Setting(containerEl)
+      .setName("Detect all file extensions")
+      .setDesc(`Pinned "${GUARDED_KEYS.showUnsupportedFiles}" (shows PDFs, data files … in the file list).`)
+      .addToggle((t) => t.setValue(!!pinned.showUnsupportedFiles)
+        .onChange(async (v) => { s.pinnedConfig = Object.assign({}, s.pinnedConfig, { showUnsupportedFiles: v }); await save(); this.plugin.enforceConfig(); }));
+    new Setting(containerEl)
+      .setName("Pin current values")
+      .setDesc("Take the values Obsidian is using right now on this device.")
+      .addButton((b) => b.setButtonText("Pin current").onClick(async () => { await this.plugin.pinCurrentConfig(); this.display(); }));
+
     new Setting(containerEl).setName("Drag and drop").setHeading();
     new Setting(containerEl)
       .setName("Import folder")
@@ -207,6 +234,15 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     });
     this.registerMarkdownCodeBlockProcessor("html-embed", (src, el, ctx) => this.render(src, el, ctx));
     this.registerView(VIEW_TYPE_HTML, (leaf) => new HtmlFileView(leaf, this));
+    // Protect vault settings against being reset by sync: check at start-up, whenever Obsidian
+    // reloads its config, when the window regains focus, and every 30 s.
+    this.app.workspace.onLayoutReady(async () => {
+      if (!this.settings.pinnedConfig) await this.pinInitialConfig();
+      this.enforceConfig();
+    });
+    try { this.registerEvent(this.app.vault.on("config-changed", () => window.setTimeout(() => this.enforceConfig(), 500))); } catch (_) { /* older Obsidian */ }
+    this.registerDomEvent(window, "focus", () => this.enforceConfig());
+    this.registerInterval(window.setInterval(() => this.enforceConfig(), 30000));
     try { this.registerExtensions(["html", "htm"], VIEW_TYPE_HTML); }
     catch (e) { console.warn("HTML Embed Anywhere: .html is already handled by another plugin", e); }
 
@@ -255,6 +291,43 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
   }
 
   async saveSettings() { await this.saveData(this.settings); }
+
+  // First run: pin the current values, but never pin the "reset" defaults.
+  async pinInitialConfig() {
+    const att = this.app.vault.getConfig("attachmentFolderPath");
+    const pin = {};
+    if (att && att !== "/") pin.attachmentFolderPath = att;
+    else if (this.settings.importFolder) pin.attachmentFolderPath = this.settings.importFolder;
+    pin.showUnsupportedFiles = true;
+    this.settings.pinnedConfig = pin;
+    await this.saveSettings();
+  }
+
+  async pinCurrentConfig() {
+    const cur = {};
+    for (const k of Object.keys(GUARDED_KEYS)) cur[k] = this.app.vault.getConfig(k);
+    this.settings.pinnedConfig = cur;
+    await this.saveSettings();
+    new Notice("Pinned: " + Object.entries(cur).map(([k, v]) => `${GUARDED_KEYS[k]} = ${v}`).join("; "));
+  }
+
+  // Restore pinned vault settings if something (usually a sync from another device) changed them.
+  enforceConfig() {
+    const pin = this.settings.pinnedConfig;
+    if (this.settings.guardConfig === false || !pin) return;
+    const fixed = [];
+    for (const [k, v] of Object.entries(pin)) {
+      if (!(k in GUARDED_KEYS) || v === undefined || v === null) continue;
+      const cur = this.app.vault.getConfig(k);
+      if (cur === v || (k === "showUnsupportedFiles" && !!cur === !!v)) continue;
+      try { this.app.vault.setConfig(k, v); fixed.push(GUARDED_KEYS[k]); } catch (_) { /* ignore */ }
+    }
+    if (fixed.length) {
+      const fe = this.app.workspace.getLeavesOfType("file-explorer")[0];
+      if (fe && fe.view && fe.view.requestSort) fe.view.requestSort();
+      new Notice("HTML Embed Anywhere restored: " + fixed.join(", ") + " (reset by settings sync).");
+    }
+  }
 
   // ---------------------------------------------------------------- drop handling
   dropTarget(evt) {
