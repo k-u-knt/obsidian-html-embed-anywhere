@@ -1,6 +1,6 @@
 # HTML Embed Anywhere
 
-Embed **local HTML files from your vault** — interactive Plotly or D3 figures, HTML reports, small dashboards — and **web pages** directly inside Obsidian notes and canvas cards, with their JavaScript working. Runs on **desktop and on iOS/iPadOS**.
+Embed **local HTML files from your vault** — interactive Plotly or D3 figures, HTML reports, small dashboards — and **web pages** directly inside Obsidian notes and canvas cards, with their JavaScript working. Runs on **desktop and on iOS/iPadOS**. It is disabled on Android, where `html-embed` blocks show a short notice instead: Obsidian on Android serves the app and the vault from `http://localhost`, so a web embed could reach Obsidian itself.
 
 Obsidian does not load vault-local `.html` files in an `<iframe>` (a deliberate security restriction), and it cannot render `.html` files placed on a canvas. This plugin reads the file through the vault API and shows it in a sandboxed frame instead.
 

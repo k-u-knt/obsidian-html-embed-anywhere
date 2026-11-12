@@ -8,6 +8,7 @@ const Module = require("node:module");
 const path = require("node:path");
 
 // main.js requires "obsidian", which only exists inside the app: give it a minimal stub.
+const platform = { isDesktopApp: false, isAndroidApp: false };
 const origLoad = Module._load;
 Module._load = function (request, ...rest) {
   if (request === "obsidian") {
@@ -15,7 +16,7 @@ Module._load = function (request, ...rest) {
     return {
       Plugin: Stub, Modal: Stub, MarkdownRenderChild: Stub, MarkdownView: Stub, TFile: Stub,
       FuzzySuggestModal: Stub, Notice: Stub, PluginSettingTab: Stub, Setting: Stub, TFolder: Stub,
-      FileView: Stub, normalizePath: (p) => p, setIcon: () => {}, Platform: { isDesktopApp: false },
+      FileView: Stub, normalizePath: (p) => p, setIcon: () => {}, Platform: platform,
     };
   }
   return origLoad.call(this, request, ...rest);
@@ -110,4 +111,27 @@ test("F2: the canvas size-line regex is linear and still matches", () => {
   re.test(" ".repeat(50000) + "z");
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.ok(ms < 100, `size-line regex took ${ms.toFixed(1)} ms`);
+});
+
+test("Android: the plugin registers only an inert placeholder for html-embed blocks", async () => {
+  const calls = [];
+  const fake = {
+    loadData: async () => ({}),
+    addSettingTab: () => calls.push("settings"),
+    registerDomEvent: () => calls.push("domEvent"),
+    registerEvent: () => calls.push("event"),
+    registerView: () => calls.push("view"),
+    registerExtensions: () => calls.push("extensions"),
+    addCommand: () => calls.push("command"),
+    addRibbonIcon: () => calls.push("ribbon"),
+    registerMarkdownCodeBlockProcessor: (name, fn) => { calls.push("processor:" + name); fake.processor = fn; },
+  };
+  platform.isAndroidApp = true;
+  try { await proto.onload.call(fake); } finally { platform.isAndroidApp = false; }
+  assert.deepStrictEqual(calls, ["processor:html-embed"]);
+  const made = [];
+  const el = { createDiv: (o) => { made.push(o); return {}; } };
+  fake.processor("https://example.com/\n", el, {});
+  assert.strictEqual(made.length, 1);
+  assert.match(made[0].text, /Android/);
 });

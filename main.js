@@ -241,6 +241,15 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
   static SIZE_LINE_RE = SIZE_LINE_RE;
 
   async onload() {
+    // Disabled on Android: there Obsidian itself runs at http://localhost and serves vault files from
+    // that origin, so a web embed (or a page it redirects to) could end up same-origin with Obsidian.
+    // Blocks show a short notice instead of their raw text; nothing else is registered.
+    if (Platform.isAndroidApp) {
+      this.registerMarkdownCodeBlockProcessor("html-embed", (src, el) => {
+        el.createDiv({ cls: "html-embed-anywhere-error", text: "html-embed: not available on Android (open this note on desktop or iOS)" });
+      });
+      return;
+    }
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
     this.addSettingTab(new HtmlEmbedSettings(this.app, this));
 
