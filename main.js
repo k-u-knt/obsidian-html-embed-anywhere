@@ -45,6 +45,11 @@ const isUrl = (s) => /^https?:\/\/\S+$/i.test((s || "").trim());
 const LOCAL_SANDBOX = "allow-scripts allow-popups allow-forms allow-downloads allow-modals";
 // A web page keeps its *own* origin (allow-same-origin), which is not Obsidian's, so it cannot reach the vault.
 const WEB_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-downloads allow-modals allow-presentation";
+// "size WxH" block option. The optional separator owns its own leading spaces, so no two \s* runs can
+// split the same whitespace (the old /size\s*[:=]?\s*/ backtracked quadratically on "size" + spaces).
+const SIZE_RE = /^size(?:\s*[:=])?\s*(\d+)\s*[x×]\s*(\d+)$/;
+const SIZE_LINE_RE = /^\s*size(?:\s*[:=])?\s*\d+\s*[x×]\s*\d+\s*$/i;
+const MAX_OPTION_LINE = 64; // longer lines are never options; skip them before any regex
 
 function shortUrl(u) {
   try { const x = new URL(u); return (x.hostname + (x.pathname === "/" ? "" : x.pathname)).replace(/\/$/, ""); }
@@ -233,6 +238,8 @@ class HtmlEmbedSettings extends PluginSettingTab {
 
 // ---------------------------------------------------------------- plugin
 module.exports = class HtmlEmbedAnywhere extends Plugin {
+  static SIZE_LINE_RE = SIZE_LINE_RE;
+
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
     this.addSettingTab(new HtmlEmbedSettings(this.app, this));
@@ -741,8 +748,9 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
   parseOptions(lines) {
     const o = { height: null, fixed: null };
     for (const raw of lines.slice(1)) {
+      if (raw.length > MAX_OPTION_LINE) continue;
       const l = raw.toLowerCase();
-      const m = l.match(/^size\s*[:=]?\s*(\d+)\s*[x×]\s*(\d+)$/);
+      const m = l.match(SIZE_RE);
       if (m) o.fixed = { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
       else if (l === "auto" || /^\d+$/.test(l)) o.height = l;
     }
@@ -814,6 +822,30 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     this.fitToCanvasCard(wrap, iframe, cap, child, opts);
   }
 
+  // True when a web URL is, or may be, Obsidian's own origin. On Android the app runs at
+  // http://localhost and serves vault files under /_capacitor_file_/, so a same-origin frame of such a
+  // URL would have full access to Obsidian and the vault. Loopback hosts and unparsable URLs count too.
+  isLocalOrAppOrigin(url, appOrigin = window.location.origin) {
+    let u;
+    try { u = new URL(String(url).trim()); } catch (_) { return true; }
+    if (appOrigin && appOrigin !== "null" && u.origin === appOrigin) return true;
+    const host = u.hostname.toLowerCase().replace(/\.$/, "");
+    if (host === "localhost" || host.endsWith(".localhost")) return true;
+    if (/^127\.\d+\.\d+\.\d+$/.test(host) || host === "0.0.0.0") return true;
+    if (host.startsWith("[")) {
+      const v6 = host.slice(1, -1);
+      if (v6 === "::1" || v6 === "::" || /^::ffff:(7f[0-9a-f]{2}:|0:0$)/.test(v6)) return true;
+    }
+    let p = u.pathname;
+    try { p = decodeURIComponent(p); } catch (_) { /* keep the raw path */ }
+    return /\/_capacitor_(file|content)_\//i.test(p);
+  }
+
+  // Sandbox for a web iframe: its own origin (allow-same-origin) only when that origin cannot be Obsidian's.
+  webSandboxFor(url, appOrigin) {
+    return this.isLocalOrAppOrigin(url, appOrigin) ? LOCAL_SANDBOX : WEB_SANDBOX;
+  }
+
   renderUrl(url, hArg, el, ctx, opts) {
     const height = (opts && opts.fixed && opts.fixed.h) || parseInt(hArg, 10) || parseInt(this.settings.defaultHeight, 10) || 600;
     const wrap = el.createDiv({ cls: "html-embed-anywhere is-web" });
@@ -830,7 +862,7 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
       this.attachGoogleSigninNotice(iframe, wrap, url);
     } else {
       iframe = wrap.createEl("iframe", {
-        attr: { src: url, sandbox: WEB_SANDBOX, allow: "fullscreen; clipboard-write; encrypted-media; picture-in-picture", title: url },
+        attr: { src: url, sandbox: this.webSandboxFor(url), allow: "fullscreen; clipboard-write; encrypted-media; picture-in-picture", title: url },
       });
     }
     iframe.style.height = height + "px";
@@ -968,7 +1000,7 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
     const data = node.getData();
     if (typeof data.text !== "string") return;
     const text = data.text.replace(/```html-embed\n([\s\S]*?)```/, (all, body) => {
-      const kept = body.split("\n").filter((l) => l.trim() && !/^\s*size\s*[:=]?\s*\d+\s*[x×]\s*\d+\s*$/i.test(l));
+      const kept = body.split("\n").filter((l) => l.trim() && (l.length > MAX_OPTION_LINE || !SIZE_LINE_RE.test(l)));
       if (size) kept.push(`size ${size.w}x${size.h}`);
       return "```html-embed\n" + kept.join("\n") + "\n```";
     });
