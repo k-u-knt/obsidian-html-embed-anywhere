@@ -192,7 +192,7 @@ class HtmlEmbedSettings extends PluginSettingTab {
       .setDesc("Signs you out of every site used in web embeds on this device and empties their cache.")
       .addButton((b) => b.setButtonText("Clear").setWarning().onClick(async () => { await this.plugin.clearWebSession(); }));
 
-    new Setting(containerEl).setName("Protect vault settings").setHeading();
+    new Setting(containerEl).setName("Protect vault configuration").setHeading();
     const pinned = s.pinnedConfig || {};
     new Setting(containerEl)
       .setName("Keep these Obsidian settings")
@@ -865,7 +865,8 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
       iframe = wrap.createEl("webview");
       iframe.setAttribute("partition", "persist:" + (this.settings.webSession || "html-embed-anywhere"));
       iframe.setAttribute("allowpopups", "");
-      iframe.setAttribute("useragent", this.browserUserAgent());
+      const ua = this.browserUserAgent();
+      if (ua) iframe.setAttribute("useragent", ua);
       iframe.setAttribute("src", url);
       wrap.addClass("is-webview");
       this.attachGoogleSigninNotice(iframe, wrap, url);
@@ -911,8 +912,15 @@ module.exports = class HtmlEmbedAnywhere extends Plugin {
 
   // A normal Chrome user agent: some sign-in pages refuse "embedded" browsers that announce
   // themselves as Electron/Obsidian.
+  // Desktop only: Electron's own user agent, the one pages would see, or "" when it can't be read.
   browserUserAgent() {
-    return navigator.userAgent.replace(/\s*obsidian\/\S+/i, "").replace(/\s*Electron\/\S+/i, "");
+    let ua = "";
+    try {
+      ua = require("@electron/remote").session.defaultSession.getUserAgent();
+    } catch (e) {
+      return "";
+    }
+    return ua.replace(/\s*obsidian\/\S+/i, "").replace(/\s*Electron\/\S+/i, "");
   }
 
   async clearWebSession() {
